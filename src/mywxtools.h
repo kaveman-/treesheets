@@ -8,11 +8,6 @@ static void DrawRectangle(wxDC &dc, uint c, int x, int y, int xs, int ys, bool o
     dc.DrawRectangle(x, y, xs, ys);
 }
 
-static void DrawLine(wxDC &dc, uint c, int x, int y, int xd, int yd) {
-    dc.SetPen(wxPen(wxColour(c)));
-    dc.DrawLine(x, y, x + xd, y + yd);
-}
-
 static void MyDrawText(wxDC &dc, const wxString &s, wxCoord x, wxCoord y, wxCoord w, wxCoord h) {
     #ifdef __WXMSW__  // this special purpose implementation is because the MSW implementation calls
                       // TextExtent, which costs
@@ -22,7 +17,7 @@ static void MyDrawText(wxDC &dc, const wxString &s, wxCoord x, wxCoord y, wxCoor
     HDC hdc = (HDC)dc.GetHDC();
     ::SetTextColor(hdc, dc.GetTextForeground().GetPixel());
     ::SetBkColor(hdc, dc.GetTextBackground().GetPixel());
-    ::ExtTextOut(hdc, x, y, 0, NULL, s.c_str(), s.length(), NULL);
+    ::ExtTextOut(hdc, x, y, 0, nullptr, s.c_str(), s.length(), nullptr);
     #else
     dc.DrawText(s, x, y);
     #endif
@@ -38,7 +33,7 @@ struct DropTarget : wxDropTarget {
         return sw->doc->hover.g ? wxDragCopy : wxDragNone;
     }
 
-    bool OnDrop(wxCoord x, wxCoord y) { return sys->frame->GetCurTab()->doc->hover.g != NULL; }
+    bool OnDrop(wxCoord x, wxCoord y) { return sys->frame->GetCurTab()->doc->hover.g != nullptr; }
     wxDragResult OnData(wxCoord x, wxCoord y, wxDragResult def) {
         GetData();
         TSCanvas *sw = sys->frame->GetCurTab();
@@ -87,18 +82,21 @@ struct ColorPopup : wxVListBoxComboPopup {
 };
 
 struct ColorDropdown : wxOwnerDrawnComboBox {
-    ColorDropdown(wxWindow *parent, wxWindowID id, int sel = 0) {
+    double csf;
+
+    ColorDropdown(wxWindow *parent, wxWindowID id, double _csf, int sel) {
+        csf = _csf;
         wxArrayString as;
         as.Add(L"", sizeof(celltextcolors) / sizeof(uint));
-        Create(parent, id, L"", wxDefaultPosition, wxSize(44, 24), as,
+        Create(parent, id, L"", wxDefaultPosition, wxSize(44, 22) * csf, as,
                wxCB_READONLY | wxCC_SPECIAL_DCLICK);
         SetPopupControl(new ColorPopup(this));
         SetSelection(sel);
-        SetPopupMaxHeight(2000);
+        SetPopupMaxHeight(wxDisplay().GetGeometry().GetHeight() * 3 / 4);
     }
 
-    wxCoord OnMeasureItem(size_t item) const { return 24; }
-    wxCoord OnMeasureItemWidth(size_t item) const { return 40; }
+    wxCoord OnMeasureItem(size_t item) const { return 22 * csf; }
+    wxCoord OnMeasureItemWidth(size_t item) const { return 40 * csf; }
     void OnDrawBackground(wxDC &dc, const wxRect &rect, int item, int flags) const {
         DrawRectangle(dc, 0xFFFFFF, rect.x, rect.y, rect.width, rect.height);
     }
@@ -115,41 +113,75 @@ struct ColorDropdown : wxOwnerDrawnComboBox {
     }
 };
 
+#define dd_icon_res_scale 3.0
+
 struct ImagePopup : wxVListBoxComboPopup {
     void OnComboDoubleClick() {
         wxString s = GetString(GetSelection());
-        sys->frame->GetCurTab()->doc->ImageChange(s);
+        sys->frame->GetCurTab()->doc->ImageChange(s, dd_icon_res_scale);
     }
 };
 
 struct ImageDropdown : wxOwnerDrawnComboBox {
-    Vector<wxBitmap *> bitmaps;  // FIXME: delete these somewhere
+    // FIXME: delete these somewhere
+    Vector<wxBitmap *> bitmaps_display;
     wxArrayString as;
+    double csf, csf_orig;
+    const int image_space = 22;
 
     ImageDropdown(wxWindow *parent, wxString &path) {
+        csf = sys->frame->csf;
+        csf_orig = sys->frame->csf;
         wxString f = wxFindFirstFile(path + L"*.*");
         while (!f.empty()) {
-            wxBitmap *bm = new wxBitmap();
-            if (bm->LoadFile(f, wxBITMAP_TYPE_PNG)) {
-                bitmaps.push() = bm;
+            wxBitmap bm;
+            if (bm.LoadFile(f, wxBITMAP_TYPE_PNG)) {
+                auto dbm = new wxBitmap();
+                ScaleBitmap(bm, csf_orig / dd_icon_res_scale, *dbm);
+                MakeInternallyScaled(*dbm, *wxWHITE, csf_orig);
+                bitmaps_display.push() = dbm;
                 as.Add(f);
             }
             f = wxFindNextFile();
         }
-        Create(parent, A_DDIMAGE, L"", wxDefaultPosition, wxSize(44, 24), as,
+        Create(parent, A_DDIMAGE, L"", wxDefaultPosition,
+               wxSize(image_space * 2, image_space) * csf, as,
                wxCB_READONLY | wxCC_SPECIAL_DCLICK);
         SetPopupControl(new ImagePopup());
         SetSelection(0);
-        SetPopupMaxHeight(2000);
+        SetPopupMaxHeight(wxDisplay().GetGeometry().GetHeight() * 3 / 4);
     }
 
-    wxCoord OnMeasureItem(size_t item) const { return 22; }
-    wxCoord OnMeasureItemWidth(size_t item) const { return 22; }
+    wxCoord OnMeasureItem(size_t item) const { return image_space * csf; }
+    wxCoord OnMeasureItemWidth(size_t item) const { return image_space * csf; }
     void OnDrawBackground(wxDC &dc, const wxRect &rect, int item, int flags) const {
         DrawRectangle(dc, 0xFFFFFF, rect.x, rect.y, rect.width, rect.height);
     }
 
     void OnDrawItem(wxDC &dc, const wxRect &rect, int item, int flags) const {
-        dc.DrawBitmap(*bitmaps[item], rect.x + 3, rect.y + 3);
+        auto bm = bitmaps_display[item];
+        sys->ImageDraw(bm, dc, rect.x + 3 * csf, rect.y + 3 * csf);
     }
 };
+
+static void ScaleBitmap(const wxBitmap &src, double sc, wxBitmap &dest) {
+    dest = wxBitmap(src.ConvertToImage().Scale(src.GetWidth() * sc, src.GetHeight() * sc,
+                    wxIMAGE_QUALITY_HIGH));
+}
+
+static void MakeInternallyScaled(wxBitmap &bm, const wxColour bg, double sc) {
+    #ifdef __WXMAC__
+        // What a mess.. is there a simpler way?
+        wxBitmap sbm;
+        sbm.CreateScaled(bm.GetWidth() / sc, bm.GetHeight() / sc, bm.GetDepth(), sc);
+        wxMemoryDC sdc(sbm);
+        //wxMemoryDC dc(bm);
+        // FIXME: this should really be transparent.
+        sdc.SetBackground(wxBrush(bg));
+        sdc.Clear();
+        //sdc.Blit(0, 0, bm.GetWidth(), bm.GetHeight(), &dc, 0, 0, wxCOPY);
+        sdc.SetUserScale(1.0 / sc, 1.0 / sc);
+        sdc.DrawBitmap(bm, wxPoint(0, 0));
+        bm = sbm;
+    #endif
+}

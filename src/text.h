@@ -11,20 +11,20 @@ struct Text {
     bool filtered;
 
     Text()
-        : cell(NULL),
+        : cell(nullptr),
           t(wxEmptyString),
           relsize(0),
           stylebits(0),
           extent(0),
-          image(NULL),
+          image(nullptr),
           filtered(false) {
         WasEdited();
     }
 
-    wxBitmap *DisplayImage() {
+    wxBitmap * DisplayImage() {
         return cell->grid && cell->grid->folded
             ? &sys->frame->foldicon
-            : (image ? &image->bm : nullptr);
+            : (image ? &image->Display() : nullptr);
     }
 
     size_t EstimatedMemoryUse() {
@@ -37,31 +37,34 @@ struct Text {
     }
 
     double GetNum() {
-        wxChar *end;
-        double r = wcstod(t.c_str(), &end); /*HUGE_VAL*/
+        std::wstringstream ss(t.ToStdWstring());
+        double r;
+        ss >> r;
         return r;
     }
 
     Cell *SetNum(double d) {
-        t = wxString::Format(L"%.15f", d);
-        const wxChar *dot = wcschr(t.c_str(), L'.');
-        if (dot) {
-            const wxChar *zeroes =
-                wcsstr(dot, L"000000");  // FIXME: this is retarded... any better way?
-            int i = (int)t.size();
-            if (zeroes)
-                i = zeroes - t.c_str();
-            else {
-                const wxChar *nines = wcsstr(dot, L"999999");
-                if (nines) {
-                    i = nines - t.c_str();
-                    wxUniCharRef c = t[i - (t[i - 1] == L'.' ? 2 : 1)];
-                    c = c.GetValue() + 1;
-                }
-            }
-            if (t[i - 1] == L'.') i--;
-            t.Truncate(i);
-        }
+        std::wstringstream ss;
+        ss << std::fixed;
+
+        // We're going to use at most 19 digits after '.'. Add small value round remainder.
+        size_t max_significant = 10;
+        d += 0.00000000005;
+
+        ss << d;
+
+        auto s = ss.str();
+        // First trim whatever lies beyond the precision to avoid garbage digits.
+        max_significant += 2;  // "0."
+        if (s[0] == '-') max_significant++;
+        if (s.length() > max_significant) s.erase(max_significant);
+        // Now strip unnecessary trailing zeroes.
+        while (s.back() == '0') s.pop_back();
+        // If there were only zeroes, remove '.'.
+        if (s.back() == '.') s.pop_back();
+
+        t = s;
+
         return cell;
     }
 
@@ -177,7 +180,7 @@ struct Text {
 
         if (ixs && iys) {
             sys->ImageDraw(DisplayImage(), dc, bx + 1 + g_margin_extra,
-                           by + (cell->tys - iys) / 2 + g_margin_extra, ixs, iys);
+                           by + (cell->tys - iys) / 2 + g_margin_extra);
             ixs += 2;
             iys += 2;
         }
@@ -185,15 +188,14 @@ struct Text {
         if (t.empty()) return iys;
 
         doc->PickFont(dc, depth, relsize, stylebits);
-        bool tiny = cell->tiny;
 
-        int h = tiny ? 1 : dc.GetCharHeight();
+        int h = cell->tiny ? 1 : dc.GetCharHeight();
         leftoffset = h;
         int i = 0;
         int lines = 0;
         bool searchfound = IsInSearch();
         bool istag = cell->IsTag(doc);
-        if (tiny) {
+        if (cell->tiny) {
             if (searchfound)
                 dc.SetPen(*wxRED_PEN);
             else if (filtered)
@@ -206,9 +208,13 @@ struct Text {
         for (;;) {
             wxString curl = GetLine(i, maxcolwidth);
             if (!curl.Len()) break;
-            if (tiny) {
+            if (cell->tiny) {
                 if (sys->fastrender) {
-                    dc.DrawLine(bx + ixs, by + lines * h, bx + ixs + curl.Len(), by + lines * h);
+                    dc.DrawLine(bx + ixs, by + lines * h, bx + ixs + (int)curl.Len(), by + lines * h);
+                    /*
+                    wxPoint points[] = { wxPoint(bx + ixs, by + lines * h), wxPoint(bx + ixs + curl.Len(), by + lines * h) };
+                    dc.DrawLines(1, points, 0, 0);
+                     */
                 } else {
                     int word = 0;
                     loop(p, (int)curl.Len() + 1) {
@@ -297,9 +303,9 @@ struct Text {
                     if (s.cursor <= end && s.cursorend >= start && !cursoronly) {
                         ls.Truncate(min(s.cursorend, end) - start);
                         int x1, x2;
-                        dc.GetTextExtent(ls, &x2, NULL);
+                        dc.GetTextExtent(ls, &x2, nullptr);
                         ls.Truncate(max(s.cursor, start) - start);
-                        dc.GetTextExtent(ls, &x1, NULL);
+                        dc.GetTextExtent(ls, &x1, nullptr);
                         if (x1 != x2)
                             DrawRectangle(
                                 dc, color, cell->GetX(doc) + x1 + 2 + ixs + g_margin_extra,
@@ -314,17 +320,20 @@ struct Text {
                 } else if (s.cursor >= start && s.cursor <= end) {
                     ls.Truncate(s.cursor - start);
                     int x;
-                    dc.GetTextExtent(ls, &x, NULL);
-                    if (doc->blink)
+                    dc.GetTextExtent(ls, &x, nullptr);
+                    if (doc->blink) {
                         #ifdef SIMPLERENDER
                         DrawRectangle(
                             dc, color, cell->GetX(doc) + x + 1 + ixs + g_margin_extra,
                             cell->GetY(doc) + l * h + 1 + cell->ycenteroff + g_margin_extra, 2,
                             h - 2);
                         #else
-                        DrawLine(dc, 0xFFFFFF, cell->GetX(doc) + x + 2 + ixs + g_margin_extra,
-                                 cell->GetY(doc) + l * h + cell->ycenteroff + g_margin_extra, 0, h);
+                            auto lx = cell->GetX(doc) + x + 2 + ixs + g_margin_extra;
+                            auto ly = cell->GetY(doc) + l * h + cell->ycenteroff + g_margin_extra;
+                            dc.SetPen(wxPen(wxColour(0xFFFFFF)));
+                            dc.DrawLine(lx, ly, lx, ly + h);
                         #endif
+                    }
                     break;
                 }
 
@@ -359,7 +368,7 @@ struct Text {
         RangeSelRemove(s);
         SetRelSize();
         t.insert(s.cursor, ins);
-        s.cursor = s.cursorend = s.cursor + ins.Len();
+        s.cursor = s.cursorend = s.cursor + (int)ins.Len();
     }
 
     void Delete(Selection &s) {
@@ -431,7 +440,7 @@ struct Text {
         relsize = dis.Read32();
 
         int i = dis.Read32();
-        image = i >= 0 ? sys->imagelist[sys->loadimageids[i]] : NULL;
+        image = i >= 0 ? sys->imagelist[sys->loadimageids[i]] : nullptr;
 
         if (sys->versionlastloaded >= 7) stylebits = dis.Read32();
 
@@ -451,7 +460,7 @@ struct Text {
                 Cell *temp = ev.Lookup(t);
 
                 if (!temp) {
-                    temp = cell->Clone(NULL);
+                    temp = cell->Clone(nullptr);
                     temp->celltype = CT_DATA;
                     temp->text.t = "**Variable Load Error**";
                 }
@@ -460,9 +469,9 @@ struct Text {
             }
 
             // Return our current data.
-            case CT_DATA: return cell->Clone(NULL);
+            case CT_DATA: return cell->Clone(nullptr);
 
-            default: return NULL;
+            default: return nullptr;
         }
     }
 

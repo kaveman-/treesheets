@@ -1,15 +1,42 @@
 
 struct Image {
-    wxBitmap bm;
+    wxBitmap bm_orig;
+    wxBitmap bm_display;
 
     int trefc;
     int savedindex;
     int checksum;
 
-    Image(wxBitmap _bm, int _cs) : bm(_bm), checksum(_cs) {}
-    void Scale(float sc) {
-        bm = wxBitmap(bm.ConvertToImage().Scale(bm.GetWidth() * sc, bm.GetHeight() * sc,
-                                                wxIMAGE_QUALITY_HIGH));
+    // This indicates a relative scale, where 1.0 means bitmap pixels match display pixels on
+    // a low res 96 dpi display. On a high dpi screen it will look scaled up. Higher values
+    // look better on most screens.
+    // This is all relative to GetContentScalingFactor.
+    double display_scale;
+
+    Image(wxBitmap _bm, int _cs, double _sc) : bm_orig(_bm), checksum(_cs), display_scale(_sc) {}
+
+    void BitmapScale(double sc) {
+        ScaleBitmap(bm_orig, sc, bm_orig);
+        bm_display = wxNullBitmap;
+    }
+
+    void DisplayScale(double sc) {
+        display_scale /= sc;
+        bm_display = wxNullBitmap;
+    }
+
+    void ResetScale(double sc) {
+        display_scale = sc;
+        bm_display = wxNullBitmap;
+    }
+
+    wxBitmap &Display() {
+        if (!bm_display.IsOk()) {
+            ScaleBitmap(bm_orig, 1.0 / display_scale * sys->frame->csf, bm_display);
+            // FIXME: this won't work because it will ignore the cell's bg color.
+            //MakeInternallyScaled(bm_display, *wxWHITE, sys->frame->csf_orig);
+        }
+        return bm_display;
     }
 };
 
@@ -67,7 +94,7 @@ struct System {
         : cfg(portable ? (wxConfigBase *)new wxFileConfig(
                              L"", wxT(""), wxGetCwd() + wxT("/TreeSheets.ini"), wxT(""), 0)
                        : (wxConfigBase *)new wxConfig(L"TreeSheets")),
-          cellclipboard(NULL),
+          cellclipboard(nullptr),
           defaultfont(
             #ifdef WIN32
               L"Lucida Sans Unicode"
@@ -87,11 +114,7 @@ struct System {
           makebaks(true),
           totray(false),
           autosave(true),
-          #ifdef __WXMAC__
-            fastrender(true),
-          #else
-            fastrender(false),
-          #endif
+          fastrender(true),
           zoomscroll(false),
           thinselc(true),
           minclose(false),
@@ -107,7 +130,7 @@ struct System {
         pen_thinselect.SetDashes(2, tspattern);
         pen_thinselect.SetStyle(wxPENSTYLE_USER_DASH);
 
-        roundness = cfg->Read(L"roundness", roundness);
+        roundness = (int)cfg->Read(L"roundness", roundness);
         defaultfont = cfg->Read(L"defaultfont", defaultfont);
         cfg->Read(L"makebaks", &makebaks, makebaks);
         cfg->Read(L"totray", &totray, totray);
@@ -150,7 +173,7 @@ struct System {
         if (filename.Len()) LoadDB(filename);
 
         if (!frame->nb->GetPageCount()) {
-            int numfiles = cfg->Read(L"numopenfiles", (long)0);
+            int numfiles = (int)cfg->Read(L"numopenfiles", (long)0);
             loop(i, numfiles) {
                 wxString fn;
                 cfg->Read(wxString::Format(L"lastopenfile_%d", i), &fn);
@@ -166,11 +189,20 @@ struct System {
 
         frame->bt.Start(400);
         savechecker.Start(1000);
+
+        ScriptInit(frame);
     }
 
-    void LoadTut() { LoadDB(frame->GetPath(L"examples/tutorial.cts")); }
+    void LoadTut() {
+        auto lang = frame->app->locale.GetCanonicalName();
+        lang.Truncate(2);
+        if (LoadDB(frame->GetPath(L"examples/tutorial-" + lang + ".cts"))[0]) {
+            LoadDB(frame->GetPath(L"examples/tutorial.cts"));
+        }
+    }
+
     Cell *&InitDB(int sizex, int sizey = 0) {
-        Cell *c = new Cell(NULL, NULL, CT_DATA, new Grid(sizex, sizey ? sizey : sizex));
+        Cell *c = new Cell(nullptr, nullptr, CT_DATA, new Grid(sizex, sizey ? sizey : sizex));
         c->cellcolor = 0xCCDCE2;
         c->grid->InitCells();
         Document *doc = NewTabDoc();
@@ -185,36 +217,36 @@ struct System {
         return fn.GetPathWithSep() + fn.GetName() + ext;
     }
 
-    const char *LoadDB(const wxString &filename, bool frominit = false, bool fromreload = false) {
+    const wxChar *LoadDB(const wxString &filename, bool frominit = false, bool fromreload = false) {
         wxString fn = filename;
         bool loadedfromtmp = false;
 
         if (!fromreload) {
-            if (frame->GetTabByFileName(filename)) return NULL;  //"this file is already loaded";
+            if (frame->GetTabByFileName(filename)) return nullptr;  //"this file is already loaded";
 
             if (::wxFileExists(TmpName(filename))) {
                 if (::wxMessageBox(
-                        L"A temporary autosave file exists, would you like to load it instead?",
-                        L"Autosave load", wxYES_NO, frame) == wxYES) {
+                        _(L"A temporary autosave file exists, would you like to load it instead?"),
+                        _(L"Autosave load"), wxYES_NO, frame) == wxYES) {
                     fn = TmpName(filename);
                     loadedfromtmp = true;
                 }
             }
         }
 
-        Document *doc = NULL;
+        Document *doc = nullptr;
         bool anyimagesfailed = false;
 
         {  // limit destructors
             wxBusyCursor wait;
             wxFFileInputStream fis(fn);
-            if (!fis.IsOk()) return "cannot open file";
+            if (!fis.IsOk()) return _(L"Cannot open file.");
 
             char buf[4];
             fis.Read(buf, 4);
-            if (strncmp(buf, "TSFF", 4)) return "not a TreeSheets file";
+            if (strncmp(buf, "TSFF", 4)) return _(L"Not a TreeSheets file.");
             fis.Read(&versionlastloaded, 1);
-            if (versionlastloaded > TS_VERSION) return "file of newer version";
+            if (versionlastloaded > TS_VERSION) return _(L"File of newer version.");
 
             fakelasteditonload = wxDateTime::Now().GetValue();
 
@@ -227,6 +259,7 @@ struct System {
                         wxDataInputStream dis(fis);
                         if (versionlastloaded < 9) dis.ReadString();
                         wxImage im;
+                        double sc = versionlastloaded >= 19 ? dis.ReadDouble() : 1.0;
                         off_t beforepng = fis.TellI();
                         bool ok = im.LoadFile(fis);
                         // ok = false;
@@ -234,13 +267,13 @@ struct System {
                             // Uhoh.. the decoder failed. Try to save the situation by skipping this
                             // PNG.
                             anyimagesfailed = true;
-                            if (beforepng == wxInvalidOffset) return "cannot tell/seek document?";
+                            if (beforepng == wxInvalidOffset) return _(L"Cannot tell/seek document?");
                             fis.SeekI(beforepng);
                             // Now try to skip past this PNG
                             uchar header[8];
                             fis.Read(header, 8);
                             uchar expected[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
-                            if (memcmp(header, expected, 8)) return "corrupt PNG header";
+                            if (memcmp(header, expected, 8)) return _(L"Corrupt PNG header.");
                             dis.BigEndianOrdered(true);
                             for (;;)  // Skip all chunks.
                             {
@@ -257,17 +290,17 @@ struct System {
                             im.SetRGB(wxRect(0, 0, sz, sz), 0xFF, 0,
                                       0);  // Set to red to indicate error.
                         }
-                        loadimageids.push() = AddImageToList(im);
+                        loadimageids.push() = AddImageToList(im, sc);
                         break;
                     }
 
                     case 'D': {
                         wxZlibInputStream zis(fis);
-                        if (!zis.IsOk()) return "cannot decompress file";
+                        if (!zis.IsOk()) return _(L"Cannot decompress file.");
                         wxDataInputStream dis(zis);
                         int numcells = 0, textbytes = 0;
-                        Cell *root = Cell::LoadWhich(dis, NULL, numcells, textbytes);
-                        if (!root) return "file corrupted!";
+                        Cell *root = Cell::LoadWhich(dis, nullptr, numcells, textbytes);
+                        if (!root) return _(L"File corrupted!");
 
                         doc = NewTabDoc(true);
                         if (loadedfromtmp) {
@@ -285,14 +318,14 @@ struct System {
                             }
                         }
 
-                        doc->sw->Status(wxString::Format(L"loaded %s (%d cells, %d characters)",
+                        doc->sw->Status(wxString::Format(_(L"Loaded %s (%d cells, %d characters)."),
                                                          filename.c_str(), numcells, textbytes)
                                             .c_str());
 
                         goto done;
                     }
 
-                    default: return "corrupt block header";
+                    default: return _(L"Corrupt block header.");
                 }
             }
         }
@@ -305,11 +338,11 @@ struct System {
 
         if (anyimagesfailed)
             wxMessageBox(
-                L"PNG decode failed on some images in this document\nThey have been replaced by "
-                L"red squares.",
-                "PNG decoder failure", wxOK, frame);
+                _(L"PNG decode failed on some images in this document\nThey have been replaced by "
+                  L"red squares."),
+                _(L"PNG decoder failure"), wxOK, frame);
 
-        return "";
+        return L"";
     }
 
     void FileUsed(const wxString &filename, Document *doc) {
@@ -326,17 +359,17 @@ struct System {
         }
     }
 
-    const char *Open(const wxString &fn) {
+    const wxChar *Open(const wxString &fn) {
         if (!fn.empty()) {
-            const char *msg = LoadDB(fn);
-            if (msg && *msg) wxMessageBox(wxString::FromAscii(msg), fn.wx_str(), wxOK, frame);
+            auto msg = LoadDB(fn);
+            if (msg && *msg) wxMessageBox(msg, fn.wx_str(), wxOK, frame);
             return msg;
         }
-        return "open file cancelled";
+        return _(L"Open file cancelled.");
     }
 
     void RememberOpenFiles() {
-        int n = frame->nb->GetPageCount();
+        int n = (int)frame->nb->GetPageCount();
         int namedfiles = 0;
 
         loop(i, n) {
@@ -355,10 +388,10 @@ struct System {
         if (frame->GetStatusBar()) {
             Cell *c = s.GetCell();
             if (c && s.xs) {
-                frame->SetStatusText(wxString::Format(L"Size %d", -c->text.relsize), 3);
-                frame->SetStatusText(wxString::Format(L"Width %d", s.g->colwidths[s.x]), 2);
+                frame->SetStatusText(wxString::Format(_(L"Size %d"), -c->text.relsize), 3);
+                frame->SetStatusText(wxString::Format(_(L"Width %d"), s.g->colwidths[s.x]), 2);
                 frame->SetStatusText(
-                    wxString::Format(L"Edited %s", c->text.lastedit.FormatDate().c_str()), 1);
+                    wxString::Format(_(L"Edited %s"), c->text.lastedit.FormatDate().c_str()), 1);
             }
         }
     }
@@ -369,8 +402,8 @@ struct System {
         }
     }
 
-    const char *Import(int k) {
-        wxString fn = ::wxFileSelector(L"Please select file to import:", L"", L"", L"", L"*.*",
+    const wxChar *Import(int k) {
+        wxString fn = ::wxFileSelector(_(L"Please select file to import:"), L"", L"", L"", L"*.*",
                                        wxFD_OPEN | wxFD_FILE_MUST_EXIST | wxFD_CHANGE_DIR);
         if (!fn.empty()) {
             wxBusyCursor wait;
@@ -383,10 +416,10 @@ struct System {
                     Cell *c = *r->grid->cells;
                     FillXML(c, doc.GetRoot(), k == A_IMPXMLA);
                     if (!c->HasText() && c->grid) {
-                        *r->grid->cells = NULL;
+                        *r->grid->cells = nullptr;
                         delete r;
                         r = c;
-                        c->parent = NULL;
+                        c->parent = nullptr;
                     }
                     break;
                 }
@@ -405,9 +438,9 @@ struct System {
                                 Cell *r = InitDB(1);
                                 FillRows(r->grid, as, CountCol(as[0]), 0, 0);
                             }; break;
-                            case A_IMPTXTC: InitDB(1, as.size())->grid->CSVImport(as, L','); break;
-                            case A_IMPTXTS: InitDB(1, as.size())->grid->CSVImport(as, L';'); break;
-                            case A_IMPTXTT: InitDB(1, as.size())->grid->CSVImport(as, L'\t'); break;
+                            case A_IMPTXTC: InitDB(1, (int)as.size())->grid->CSVImport(as, L','); break;
+                            case A_IMPTXTS: InitDB(1, (int)as.size())->grid->CSVImport(as, L';'); break;
+                            case A_IMPTXTT: InitDB(1, (int)as.size())->grid->CSVImport(as, L'\t'); break;
                         }
                     break;
                 }
@@ -415,13 +448,13 @@ struct System {
             frame->GetCurTab()->doc->ChangeFileName(fn.BeforeLast(L'.').Append(L".cts"));
             frame->GetCurTab()->doc->ClearSelectionRefresh();
         }
-        return NULL;
+        return nullptr;
     problem:
-        wxMessageBox(L"couldn't import file!", fn, wxOK, frame);
-        return "file load error";
+        wxMessageBox(_(L"couldn't import file!"), fn, wxOK, frame);
+        return _(L"File load error.");
     }
 
-    int GetXMLNodes(wxXmlNode *n, Vector<wxXmlNode *> &ns, Vector<wxXmlAttribute *> *ps = NULL,
+    int GetXMLNodes(wxXmlNode *n, Vector<wxXmlNode *> &ns, Vector<wxXmlAttribute *> *ps = nullptr,
                     bool attributestoo = false) {
         for (wxXmlNode *child = n->GetChildren(); child; child = child->GetNext()) {
             if (child->GetType() == wxXML_ELEMENT_NODE) ns.push() = child;
@@ -509,7 +542,7 @@ struct System {
         return (int)as.size();
     }
 
-    int AddImageToList(const wxImage &im) {
+    int AddImageToList(const wxImage &im, double sc) {
         uint *p = (uint *)im.GetData();
         uint checksum = im.GetWidth() | (im.GetHeight() << 16);
         loop(i, im.GetWidth() * im.GetHeight() * 3 / 4) checksum ^= *p++;
@@ -518,7 +551,7 @@ struct System {
             if (imagelist[i]->checksum == checksum) return i;
         }
 
-        imagelist.push() = new Image(wxBitmap(im), checksum);
+        imagelist.push() = new Image(wxBitmap(im), checksum, sc);
         return imagelist.size() - 1;
     }
 
@@ -528,13 +561,7 @@ struct System {
         ys = bm->GetHeight();
     }
 
-    void ImageDraw(wxBitmap *bm, wxDC &dc, int x, int y, int xs, int ys) {
-        double xscale = xs / (double)bm->GetWidth();
-        double yscale = ys / (double)bm->GetHeight();
-        double prevx, prevy;
-        dc.GetUserScale(&prevx, &prevy);
-        dc.SetUserScale(xscale * prevx, yscale * prevy);
-        dc.DrawBitmap(*bm, x / xscale, y / yscale);
-        dc.SetUserScale(prevx, prevy);
+    void ImageDraw(wxBitmap *bm, wxDC &dc, int x, int y) {
+        dc.DrawBitmap(*bm, x, y);
     }
 };

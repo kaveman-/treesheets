@@ -30,7 +30,7 @@ static uint celltextcolors[] = {
 };
 #define CUSTOMCOLORIDX 0
 
-enum { TS_VERSION = 18, TS_TEXT = 0, TS_GRID, TS_BOTH, TS_NEITHER };
+enum { TS_VERSION = 19, TS_TEXT = 0, TS_GRID, TS_BOTH, TS_NEITHER };
 
 enum {
     A_NEW = 500,
@@ -204,7 +204,9 @@ enum {
     A_FOLD,
     A_FOLDALL,
     A_UNFOLDALL,
-    A_IMAGESC,
+    A_IMAGESCP,
+    A_IMAGESCF,
+    A_IMAGESCN,
     A_HELPI,
     A_REDO,
     A_FSWATCH,
@@ -215,7 +217,9 @@ enum {
     A_CUSTKEY,
     A_AUTOEXPORT,
     A_NOP,
-    A_TAGSET = 1000  // and all values from here on
+    A_TAGSET = 1000,  // and all values from here on
+    A_SCRIPT = 2000,  // and all values from here on
+    A_MAXACTION = 3000
 };
 
 enum {
@@ -226,7 +230,13 @@ enum {
     STYLE_STRIKETHRU = 16
 };
 
+#include "script_interface.h"
+
+using namespace script;
+
 struct treesheets {
+    struct TreeSheetsScriptImpl;
+
     struct Cell;
     struct Grid;
     struct Text;
@@ -237,10 +247,13 @@ struct treesheets {
 
     struct System;
 
+    struct MyApp;
     struct MyFrame;
     struct TSCanvas;
 
     static System *sys;
+
+    #include "treesheets_impl.h"
 
     #include "selection.h"
     #include "text.h"
@@ -257,7 +270,8 @@ struct treesheets {
     #include "myapp.h"
 };
 
-treesheets::System *treesheets::sys = NULL;
+treesheets::System *treesheets::sys = nullptr;
+treesheets::TreeSheetsScriptImpl treesheets::tssi;
 
 IMPLEMENT_APP(treesheets::MyApp)
 
